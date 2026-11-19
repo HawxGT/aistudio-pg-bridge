@@ -1018,6 +1018,7 @@ const DASHBOARD_TEXT_MODELS = [
   'gemini-4-argon(-high/low)',
   'gemini-4-carbon(-low/medium/high)',
   'gemini-4-neon(-low/medium/high/xhigh)',
+  'gemini-4-hydrogen(-low/medium/high/xhigh)',
   'gemini-3.8-flash(-high/low)',
   'gemini-3.6-flash',
   'gemini-3.5-flash-lite(-high/low)',
