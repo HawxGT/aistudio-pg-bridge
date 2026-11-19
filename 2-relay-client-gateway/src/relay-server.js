@@ -384,6 +384,10 @@ const THINKING_LEVEL_MAP = {
   thinking_level_high: 3,
   minimal: 4,
   thinking_level_minimal: 4,
+  // xhigh：AI Studio ThinkingLevel 枚举的下一个槽位（1=LOW 2=MEDIUM 3=HIGH 4=MINIMAL 5=XHIGH）。
+  // 目前 gemini-4-neon 专属；如上游拒绝该值，改成它实际要求的枚举即可。
+  xhigh: 5,
+  thinking_level_xhigh: 5,
 };
 
 const AISTUDIO_ORIGIN = 'https://aistudio.google.com';
@@ -1252,7 +1256,7 @@ function buildWireGenerationConfig(generationConfig = {}, model = '') {
     thinkingBudget = Number(thinkingBudget);
   }
 
-  const suffixMatch = String(model || '').trim().match(/-(high|medium|low|minimal)$/i);
+  const suffixMatch = String(model || '').trim().match(/-(xhigh|high|medium|low|minimal)$/i);
   const forcedLevelStr = suffixMatch ? suffixMatch[1].toLowerCase() : null;
 
   const rawLevel =
@@ -2977,7 +2981,13 @@ function createRelayServer(options = {}) {
         { id: 'gemini-4-argon-low', displayName: 'Gemini 4 Argon (Low Thinking)' },
         { id: 'gemini-4-carbon', displayName: 'Gemini 4 Carbon' },
         { id: 'gemini-4-carbon-high', displayName: 'Gemini 4 Carbon (High Thinking)' },
+        { id: 'gemini-4-carbon-medium', displayName: 'Gemini 4 Carbon (Medium Thinking)' },
         { id: 'gemini-4-carbon-low', displayName: 'Gemini 4 Carbon (Low Thinking)' },
+        { id: 'gemini-4-neon', displayName: 'Gemini 4 Neon' },
+        { id: 'gemini-4-neon-xhigh', displayName: 'Gemini 4 Neon (X-High Thinking)' },
+        { id: 'gemini-4-neon-high', displayName: 'Gemini 4 Neon (High Thinking)' },
+        { id: 'gemini-4-neon-medium', displayName: 'Gemini 4 Neon (Medium Thinking)' },
+        { id: 'gemini-4-neon-low', displayName: 'Gemini 4 Neon (Low Thinking)' },
         { id: 'gemini-4-hydrogen', displayName: 'Gemini 4 Hydrogen' },
         { id: 'gemini-4-hydrogen-high', displayName: 'Gemini 4 Hydrogen (High Thinking)' },
         { id: 'gemini-4-hydrogen-low', displayName: 'Gemini 4 Hydrogen (Low Thinking)' },

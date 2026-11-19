@@ -168,7 +168,7 @@ async function probeSessionAccounts(cookies, opts = {}) {
 function resolveModelAlias(modelInput, fallback = 'models/gemini-3.8-flash') {
   const raw = String(modelInput || '')
     .trim()
-    .replace(/-(high|medium|low|minimal)$/i, '');
+    .replace(/-(xhigh|high|medium|low|minimal)$/i, '');
   if (!raw) return fallback;
   const lower = raw.toLowerCase();
   if (
@@ -193,6 +193,15 @@ function resolveModelAlias(modelInput, fallback = 'models/gemini-3.8-flash') {
     lower === 'models/gemini-4-carbon'
   ) {
     return 'models/gemini-4-carbon';
+  }
+
+  if (
+    lower === 'neon' ||
+    lower === '4-neon' ||
+    lower === 'gemini-4-neon' ||
+    lower === 'models/gemini-4-neon'
+  ) {
+    return 'models/gemini-4-neon';
   }
 
   if (
@@ -754,7 +763,7 @@ class RelayAccountStore {
     const cleanModel = String(model || '')
       .trim()
       .replace(/^models\//i, '')
-      .replace(/-(high|medium|low|minimal)$/i, '');
+      .replace(/-(xhigh|high|medium|low|minimal)$/i, '');
     entry.lastUsedAt = Date.now();
     entry.requestsCount = (entry.requestsCount || 0) + 1;
     if (cleanModel) {
@@ -1007,6 +1016,8 @@ async function submitLogin(e) {
 // 网页模型清单：包装模式在前，统一带 (防外审截断-) 前缀
 const DASHBOARD_TEXT_MODELS = [
   'gemini-4-argon(-high/low)',
+  'gemini-4-carbon(-low/medium/high)',
+  'gemini-4-neon(-low/medium/high/xhigh)',
   'gemini-3.8-flash(-high/low)',
   'gemini-3.6-flash',
   'gemini-3.5-flash-lite(-high/low)',
