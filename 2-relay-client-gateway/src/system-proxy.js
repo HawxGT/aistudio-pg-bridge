@@ -435,9 +435,27 @@ function requestViaHttpProxy(targetUrlStr, options, proxyUrlStr) {
         ALPNProtocols: ['http/1.1'],
       });
 
-      // 注意：https.request 只有在「不传 agent」时才会采用 options.createConnection。
-      // 传 agent: false 会新建一个默认 Agent，createConnection 被忽略 → 请求直接连目标 IP，绕过 CONNECT 隧道。
-      // 必须用自定义 Agent 显式接管连接。
+      const cleanupSockets = () => {
+        try {
+          if (!tlsSocket.destroyed) tlsSocket.destroy();
+        } catch {}
+        try {
+          if (!socket.destroyed) socket.destroy();
+        } catch {}
+      };
+      socket.once('end', () => {
+        try {
+          if (!tlsSocket.destroyed) tlsSocket.end();
+        } catch {}
+      });
+      tlsSocket.once('close', () => {
+        try {
+          if (!socket.destroyed) socket.destroy();
+        } catch {}
+      });
+      tlsSocket.once('error', () => cleanupSockets());
+
+      // https.request 只有不传 agent 时才会用 options.createConnection；agent:false 会新建默认 Agent 并忽略它，导致绕过隧道直连目标。
       const tunnelAgent = new https.Agent({ keepAlive: false });
       tunnelAgent.createConnection = () => tlsSocket;
 
@@ -456,14 +474,19 @@ function requestViaHttpProxy(targetUrlStr, options, proxyUrlStr) {
         },
         (res) => {
           settled = true;
+          res.once('close', cleanupSockets);
           resolve(createFetchCompatibleResponse(res));
         },
       );
 
       req.on('error', (err) => {
+        cleanupSockets();
         if (settled) return;
         settled = true;
         reject(err);
+      });
+      req.once('close', () => {
+        if (!settled) cleanupSockets();
       });
 
       if (body != null) req.write(body);

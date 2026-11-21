@@ -3103,28 +3103,37 @@ function createRelayServer(options = {}) {
             res.write(`data: ${JSON.stringify(roleChunk)}\n\n`);
           };
 
-          // 包装模式要等上游整段生成完才回正文：15s 后先发 SSE 头并每 10s 心跳，
-          // 避免 Cloudflare 120s 无字节直接 524。
+          // 所有流式模型统一启用 SSE 保活：长思考/重签/重试期间可能 >100s 无首字节或空闲，
+          // 15s 后先发 SSE 头并每 10s 发送 `: keepalive` 注释防止 Cloudflare 100s 超时断开；
+          // 15s 内的失败仍保持原样按 JSON 错误返回。
           let wrapHeartbeat = null;
           let wrapHeartbeatStart = null;
-          if (wrappedStream) {
-            const stopWrapHeartbeat = () => {
-              if (wrapHeartbeatStart) clearTimeout(wrapHeartbeatStart);
-              if (wrapHeartbeat) clearInterval(wrapHeartbeat);
-              wrapHeartbeatStart = null;
-              wrapHeartbeat = null;
-            };
-            res.once('close', stopWrapHeartbeat);
-            wrapHeartbeatStart = setTimeout(() => {
-              ensureSseHeaders();
-              wrapHeartbeat = setInterval(() => {
-                try {
-                  res.write(': keepalive\n\n');
-                } catch {}
-              }, 10000);
-            }, 15000);
-          }
+          const stopWrapHeartbeat = () => {
+            if (wrapHeartbeatStart) clearTimeout(wrapHeartbeatStart);
+            if (wrapHeartbeat) clearInterval(wrapHeartbeat);
+            wrapHeartbeatStart = null;
+            wrapHeartbeat = null;
+          };
+          res.once('close', stopWrapHeartbeat);
+          wrapHeartbeatStart = setTimeout(() => {
+            if (res.writableEnded || res.destroyed) return;
+            ensureSseHeaders();
+            wrapHeartbeat = setInterval(() => {
+              if (res.writableEnded || res.destroyed) {
+                stopWrapHeartbeat();
+                return;
+              }
+              try {
+                res.write(': keepalive\n\n');
+              } catch {
+                stopWrapHeartbeat();
+              }
+            }, 10000);
+            if (typeof wrapHeartbeat.unref === 'function') wrapHeartbeat.unref();
+          }, 15000);
+          if (typeof wrapHeartbeatStart.unref === 'function') wrapHeartbeatStart.unref();
 
+          try {
           await relayClient.streamGenerateContent(
             {
               wireContents,
@@ -3217,10 +3226,9 @@ function createRelayServer(options = {}) {
             },
           );
 
-          if (wrapHeartbeatStart) clearTimeout(wrapHeartbeatStart);
-          if (wrapHeartbeat) clearInterval(wrapHeartbeat);
-          wrapHeartbeatStart = null;
-          wrapHeartbeat = null;
+          } finally {
+            stopWrapHeartbeat();
+          }
 
           const wrappedText = wrapBuf || wrapFallback;
           if (wrappedStream && !wrappedText) {
@@ -3313,26 +3321,35 @@ function createRelayServer(options = {}) {
             });
           };
 
+          // 所有 Gemini 流式请求统一启用 SSE 保活，防止 Cloudflare 100s 无字节超时断开。
           let gWrapHeartbeat = null;
           let gWrapHeartbeatStart = null;
-          if (geminiWrapped) {
-            const stopGWrapHeartbeat = () => {
-              if (gWrapHeartbeatStart) clearTimeout(gWrapHeartbeatStart);
-              if (gWrapHeartbeat) clearInterval(gWrapHeartbeat);
-              gWrapHeartbeatStart = null;
-              gWrapHeartbeat = null;
-            };
-            res.once('close', stopGWrapHeartbeat);
-            gWrapHeartbeatStart = setTimeout(() => {
-              ensureGeminiHeaders();
-              gWrapHeartbeat = setInterval(() => {
-                try {
-                  res.write(': keepalive\n\n');
-                } catch {}
-              }, 10000);
-            }, 15000);
-          }
+          const stopGWrapHeartbeat = () => {
+            if (gWrapHeartbeatStart) clearTimeout(gWrapHeartbeatStart);
+            if (gWrapHeartbeat) clearInterval(gWrapHeartbeat);
+            gWrapHeartbeatStart = null;
+            gWrapHeartbeat = null;
+          };
+          res.once('close', stopGWrapHeartbeat);
+          gWrapHeartbeatStart = setTimeout(() => {
+            if (res.writableEnded || res.destroyed) return;
+            ensureGeminiHeaders();
+            gWrapHeartbeat = setInterval(() => {
+              if (res.writableEnded || res.destroyed) {
+                stopGWrapHeartbeat();
+                return;
+              }
+              try {
+                res.write(': keepalive\n\n');
+              } catch {
+                stopGWrapHeartbeat();
+              }
+            }, 10000);
+            if (typeof gWrapHeartbeat.unref === 'function') gWrapHeartbeat.unref();
+          }, 15000);
+          if (typeof gWrapHeartbeatStart.unref === 'function') gWrapHeartbeatStart.unref();
 
+          try {
           await relayClient.streamGenerateContent(
             {
               wireContents,
@@ -3383,10 +3400,9 @@ function createRelayServer(options = {}) {
             },
           );
 
-          if (gWrapHeartbeatStart) clearTimeout(gWrapHeartbeatStart);
-          if (gWrapHeartbeat) clearInterval(gWrapHeartbeat);
-          gWrapHeartbeatStart = null;
-          gWrapHeartbeat = null;
+          } finally {
+            stopGWrapHeartbeat();
+          }
 
           if (geminiWrapped) {
             const gText = gWrapBuf || gWrapFallback;
@@ -3511,6 +3527,9 @@ function createRelayServer(options = {}) {
     relayClient,
     server,
     async listen() {
+      server.requestTimeout = 0;
+      server.headersTimeout = 60_000;
+      server.keepAliveTimeout = 65_000;
       await new Promise((resolve, reject) => {
         server.once('error', reject);
         server.listen(port, host, () => resolve());
