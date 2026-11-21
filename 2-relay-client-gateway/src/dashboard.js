@@ -1672,8 +1672,8 @@ async function refreshStatus() {
           ? '<span class="pill err" title="已手动禁用，不参与请求轮询">DISABLED</span>'
           : poolBadgeHtml(a.pool);
         const toggleBtn = isDisabled
-          ? '<button class="secondary" onclick="toggleAcc(\'' + a.accountId + '\', false)" style="padding:4px 10px;font-size:11.5px;margin-right:4px;border-color:var(--border-strong);">▶ 启用</button>'
-          : '<button class="secondary" onclick="toggleAcc(\'' + a.accountId + '\', true)" style="padding:4px 10px;font-size:11.5px;margin-right:4px;">⏸ 禁用</button>';
+          ? '<button class="secondary" onclick="toggleAcc(\\'' + a.accountId + '\\', false)" style="padding:4px 10px;font-size:11.5px;margin-right:4px;border-color:var(--border-strong);">▶ 启用</button>'
+          : '<button class="secondary" onclick="toggleAcc(\\'' + a.accountId + '\\', true)" style="padding:4px 10px;font-size:11.5px;margin-right:4px;">⏸ 禁用</button>';
         return \`
         <tr style="\${rowStyle}">
           <td data-label="账号 ID"><code>\${a.accountId}</code></td>
