@@ -2,7 +2,7 @@
 
 本地 OpenAI / Gemini 兼容反代网关（默认监听 `http://127.0.0.1:18802`）：
 - **Cookie 持久化账号池**：面板粘贴油猴导出的 JSON、原始 Cookie 或 cURL 导入后，自动写入 `cookies/` 目录（一个账号一个 JSON），重启自动加载；无需手动维护 `cookies.example.json`。
-- **与 `3-waa-proof-server` 协同**：只把最小核心 Cookie 与聊天记录发往 `PROOF_SERVER_URL/v1/proof/mint` 换取 `!xxx` 签名；`SAPISIDHASH` 鉴权头和 Cookie 轮换都在本地完成，再直连 Google `MakerSuiteService/GenerateContent`。
+- **与 `3-waa-proof-server` 协同**：启动网关（`node bin/start-relay.js`）时会自动在后台拉起同级的本地 `3-waa-proof-server`（默认 `http://127.0.0.1:18801`），仅把最小核心 Cookie 与聊天记录发往本地签名服务换取 `!xxx` 签名；`SAPISIDHASH` 鉴权头和 Cookie 轮换都在本地完成，再直连 Google `MakerSuiteService/GenerateContent`。
 - **401 自愈**：遇到 401/权限 403 时，本地调用 `accounts.google.com/RotateCookies` 刷新 `__Secure-1PSIDTS`/`SIDCC`，写回内存与 `cookies/*.json` 后重新签名并重试一次；Google 响应里的 `Set-Cookie` 也会同步到本地账号。
 - **失败自动换号**：`401` / 权限类 `403` / `429` / `5xx` / 网络异常时，自动切换到下一个未试过的账号重试，最多尝试 `min(账号数, 3)` 个；`Region not supported` 这类环境问题不换号。
 - **真增量实时 SSE 流式响应**：内置 `IncrementalJspbFrameParser` 流式状态机，按字节流实时解析 Google 返回的 `[[ frame1, frame2, ... ]]` 数据帧，边收边向下游推送 `chat.completion.chunk`（含思考过程 `reasoning_content` 与正文 `content`），无整包等待延迟。
@@ -54,8 +54,7 @@ node bin/start-relay.js
 | 变量 | 说明 |
 |---|---|
 | `RELAY_HOST` / `RELAY_PORT` | 监听地址，默认 `127.0.0.1:18802` |
-| `PROOF_SERVER_URL` | 签名服务地址，如 `https://waa.spinsnow.fun` |
-| `RELAY_API_KEY` | 下游调用鉴权，默认 `sk-waa-local-relay-key` |
+| `RELAY_API_KEY` | 下游调用鉴权，默认 `sk-waa...-key` |
 | `DEFAULT_MODEL` | 默认模型，默认 `gemini-3.8-flash` |
 | `COOKIES_DIR` | Cookie 持久化目录，默认 `./cookies` |
 

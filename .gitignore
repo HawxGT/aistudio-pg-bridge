@@ -8,6 +8,7 @@ cache/
 data/
 *.log
 .DS_Store
-
-3-waa-proof-server/*
-!3-waa-proof-server/API.md
+.env
+3-waa-proof-server/.env
+3-waa-proof-server/data/
+3-waa-proof-server/waa-runtime/cache/

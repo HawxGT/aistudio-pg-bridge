@@ -1882,13 +1882,15 @@ function toGeminiResponse(parsed, model) {
   };
 }
 
+const LOCAL_PROOF_HOST = String(process.env.PROOF_HOST || '127.0.0.1').trim() || '127.0.0.1';
+const LOCAL_PROOF_PORT = Number(process.env.PROOF_PORT || 18801);
+const LOCAL_PROOF_URL = `http://${LOCAL_PROOF_HOST === '0.0.0.0' ? '127.0.0.1' : LOCAL_PROOF_HOST}:${LOCAL_PROOF_PORT}`;
+
 class WaaRelayClient {
   constructor(options = {}) {
-    // Configuration comes from `.env` (loaded by bin/start-relay.js); explicit
-    // options are only used by programmatic callers / tests.
-    this.proofServerUrl = String(
-      options.proofServerUrl || process.env.PROOF_SERVER_URL || 'http://127.0.0.1:18801',
-    ).replace(/\/+$/, '');
+    // Signature minting always targets the local 3-waa-proof-server;
+    // `options.proofServerUrl` is only kept for isolated unit tests.
+    this.proofServerUrl = String(options.proofServerUrl || LOCAL_PROOF_URL).replace(/\/+$/, '');
     this.origin = String(options.origin || AISTUDIO_ORIGIN).replace(/\/+$/, '');
     this.googleApiKey =
       options.googleApiKey || process.env.GOOGLE_API_KEY || DEFAULT_GOOGLE_API_KEY;
@@ -2166,6 +2168,16 @@ class WaaRelayClient {
         body: wireBody,
       });
     } catch (err) {
+      if (this.accountStore && typeof this.accountStore.recordError === 'function') {
+        this.accountStore.recordError({
+          accountId: accountId || (minimal.map.size > 0 ? computeAccountId(minimal.map, auth.authUser ?? 0) : null),
+          authUser: auth.authUser ?? 0,
+          model: String(targetModel || '').replace(/^models\//i, ''),
+          status: 502,
+          source: 'request',
+          message: `Google GenerateContent network error: ${err && err.message ? err.message : err}`,
+        });
+      }
       // Network failure is retryable on the next account.
       const switched = this.retryWithNextAccount(state, params, resolvedWireContents, targetModel);
       if (switched) return switched;
@@ -2230,6 +2242,20 @@ class WaaRelayClient {
 
     if (!res.ok) {
       const rawText = await res.text();
+      const upstreamErrPre = extractUpstreamError(rawText);
+      const errMsgPre = upstreamErrPre
+        ? upstreamErrPre[1]
+        : rawText.replace(/^\s*/, '').slice(0, 600);
+      if (this.accountStore && typeof this.accountStore.recordError === 'function') {
+        this.accountStore.recordError({
+          accountId: accountId || (minimal.map.size > 0 ? computeAccountId(minimal.map, auth.authUser ?? 0) : null),
+          authUser: auth.authUser ?? 0,
+          model: String(targetModel || '').replace(/^models\//i, ''),
+          status: res.status,
+          source: 'request',
+          message: `Google GenerateContent HTTP ${res.status}: ${errMsgPre}`,
+        });
+      }
       const regionBlocked = res.status === 403 && rawText.includes('Region not supported');
       // 除 400（请求本身非法，换号也没用）和地区限制外，任何非 2xx 都换号重试。
       const isRetryable = !regionBlocked && res.status !== 400;
@@ -2795,7 +2821,7 @@ function createRelayServer(options = {}) {
         const poolByAccount = {};
         await Promise.all(
           Array.from(store.accounts.values())
-            .filter((entry) => entry.status === 'ready')
+            .filter((entry) => entry.status === 'ready' && !entry.disabled)
             .map(async (entry) => {
               poolByAccount[entry.accountId] = await fetchAccountPoolInfo(relayClient, entry);
             }),
@@ -2807,6 +2833,7 @@ function createRelayServer(options = {}) {
           accounts: accounts.map((a) => ({ ...a, pool: poolByAccount[a.accountId] || null })),
           cookiesDir: store.storageDir || null,
           cookieFiles: store.cookieStore ? store.cookieStore.count() : 0,
+          recentErrors: typeof store.getRecentErrors === 'function' ? store.getRecentErrors(30) : [],
         });
       }
 
@@ -2901,6 +2928,30 @@ function createRelayServer(options = {}) {
         return sendJson(res, 200, { ok: true });
       }
 
+      if (req.method === 'POST' && (pathname === '/api/accounts/toggle' || pathname === '/v1/accounts/toggle')) {
+        if (!isPanelAuthenticated(req, url, apiKey)) {
+          return sendJson(res, 401, { ok: false, error: 'Unauthorized: 请先使用 API Key 登录面板' });
+        }
+        const body = await readJsonBody(req);
+        const entry = relayClient.accountStore.accounts.get(body.accountId);
+        if (!entry) {
+          return sendJson(res, 404, { ok: false, error: '未找到该账号' });
+        }
+        const nextDisabled = body.disabled !== undefined ? Boolean(body.disabled) : !entry.disabled;
+        const pub = relayClient.accountStore.setDisabled(body.accountId, nextDisabled);
+        return sendJson(res, 200, { ok: true, account: pub });
+      }
+
+      if (req.method === 'POST' && pathname === '/api/errors/clear') {
+        if (!isPanelAuthenticated(req, url, apiKey)) {
+          return sendJson(res, 401, { ok: false, error: 'Unauthorized: 请先使用 API Key 登录面板' });
+        }
+        if (Array.isArray(relayClient.accountStore.recentErrors)) {
+          relayClient.accountStore.recentErrors.length = 0;
+        }
+        return sendJson(res, 200, { ok: true });
+      }
+
       if (req.method === 'POST' && (pathname === '/api/accounts/test' || pathname === '/v1/accounts/test')) {
         if (!isPanelAuthenticated(req, url, apiKey)) {
           return sendJson(res, 401, { ok: false, error: 'Unauthorized: 请先使用 API Key 登录面板' });
@@ -2926,7 +2977,7 @@ function createRelayServer(options = {}) {
             accountId: entry.accountId,
             fromStore: false,
           });
-          entry.status = 'ready';
+          if (!entry.disabled) entry.status = 'ready';
           entry.lastError = null;
           if (relayClient.accountStore.cookieStore && typeof relayClient.accountStore.cookieStore.save === 'function') {
             try {
@@ -2964,7 +3015,19 @@ function createRelayServer(options = {}) {
               reply: '凭证有效（当前模型今日配额已满）',
             });
           }
+          if (entry.disabled) entry.status = 'disabled';
           entry.lastError = msg;
+          if (typeof relayClient.accountStore.recordError === 'function') {
+            relayClient.accountStore.recordError({
+              accountId: entry.accountId,
+              email: entry.email || null,
+              authUser: entry.authUser,
+              model: 'gemini-3.5-flash-lite',
+              status: err && err.httpStatus ? err.httpStatus : null,
+              source: 'test',
+              message: msg,
+            });
+          }
           return sendJson(res, 200, {
             ok: true,
             alive: false,

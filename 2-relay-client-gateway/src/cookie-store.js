@@ -97,6 +97,7 @@ class CookieStore {
       requestsCount: entry.requestsCount || 0,
       dailyBucket: entry.dailyBucket || null,
       dailyModelCounts: entry.dailyModelCounts || {},
+      disabled: Boolean(entry.disabled),
       cookies: entry.cookies,
     };
     fs.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, { mode: FILE_MODE });

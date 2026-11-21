@@ -225,6 +225,7 @@ class RelayAccountStore {
   constructor(options = {}) {
     this.accounts = new Map();
     this.rrIndex = 0;
+    this.recentErrors = [];
     this.storageDir = null;
     this.cookieStore = null;
     this.loadedFiles = 0;
@@ -262,9 +263,13 @@ class RelayAccountStore {
             }
             if (data.email) restored.email = String(data.email);
             if (data.gaiaId) restored.gaiaId = String(data.gaiaId);
+            if (data.disabled || data.status === 'disabled') {
+              restored.disabled = true;
+              restored.status = 'disabled';
+            }
             if (data.expiredAt) {
               restored.expiredAt = Number(data.expiredAt) || Date.now();
-              restored.status = 'error';
+              if (!restored.disabled) restored.status = 'error';
               restored.lastError = data.lastError || EXPIRED_ERROR_TEXT;
             }
             const curBucket = currentQuotaBucket();
@@ -503,7 +508,8 @@ class RelayAccountStore {
       cookieCount: min.map.size,
       cookieNames: Array.from(min.map.keys()),
       source: existing ? existing.source : source,
-      status: 'ready',
+      disabled: existing ? Boolean(existing.disabled) : false,
+      status: existing && existing.disabled ? 'disabled' : 'ready',
       addedAt: existing ? existing.addedAt : now,
       updatedAt: now,
       lastRotatedAt: now,
@@ -713,10 +719,48 @@ class RelayAccountStore {
     return targetEntry ? this.toPublicView(targetEntry) : null;
   }
 
+  setDisabled(accountId, disabled) {
+    const entry = this.accounts.get(accountId);
+    if (!entry) return null;
+    entry.disabled = Boolean(disabled);
+    if (entry.disabled) {
+      entry.status = 'disabled';
+    } else {
+      entry.status = entry.expiredAt ? 'error' : 'ready';
+    }
+    entry.updatedAt = Date.now();
+    this.persist(entry);
+    return this.toPublicView(entry);
+  }
+
+  recordError(info = {}) {
+    const entry = info.accountId ? this.accounts.get(info.accountId) : null;
+    const item = {
+      ts: Date.now(),
+      accountId: info.accountId || null,
+      email: info.email || (entry && entry.email) || null,
+      authUser: info.authUser != null ? info.authUser : (entry ? entry.authUser : null),
+      model: info.model || null,
+      status: info.status != null ? Number(info.status) : null,
+      source: info.source || 'request',
+      message: String(info.message || '未知错误').slice(0, 800),
+    };
+    this.recentErrors.unshift(item);
+    if (this.recentErrors.length > 50) this.recentErrors.length = 50;
+    if (entry) {
+      entry.lastError = item.message;
+    }
+    return item;
+  }
+
+  getRecentErrors(limit = 30) {
+    return this.recentErrors.slice(0, Math.max(1, Math.min(50, Number(limit) || 30)));
+  }
+
   countReady() {
     let count = 0;
     for (const account of this.accounts.values()) {
-      if (account.status === 'ready') count += 1;
+      if (account.status === 'ready' && !account.disabled) count += 1;
     }
     return count;
   }
@@ -730,7 +774,7 @@ class RelayAccountStore {
    * the current request (used for automatic failover).
    */
   pickAccountExcluding(excludedIds = null) {
-    const list = Array.from(this.accounts.values()).filter((a) => a.status === 'ready');
+    const list = Array.from(this.accounts.values()).filter((a) => a.status === 'ready' && !a.disabled);
     if (list.length === 0) return null;
     const excluded = excludedIds instanceof Set ? excludedIds : new Set(excludedIds || []);
     for (let i = 0; i < list.length; i += 1) {
@@ -790,6 +834,7 @@ class RelayAccountStore {
       cookieNames: entry.cookieNames,
       source: entry.source,
       status: entry.status,
+      disabled: Boolean(entry.disabled),
       addedAt: entry.addedAt,
       updatedAt: entry.updatedAt,
       lastUsedAt: entry.lastUsedAt,
@@ -1439,6 +1484,19 @@ function renderDashboardHtml({
     </div>
     <pre id="curl-example"></pre>
   </div>
+
+  <div class="card">
+    <h2>
+      <span>03 // 最近报错日志</span>
+      <span style="display:flex;align-items:center;gap:8px;">
+        <span class="pill gray" id="errlog-count">0 条</span>
+        <button class="secondary" onclick="clearErrorLogs()" style="padding:4px 10px;font-size:11.5px;">清空日志</button>
+      </span>
+    </h2>
+    <div id="error-logs-box" style="display:flex;flex-direction:column;gap:8px;max-height:360px;overflow-y:auto;">
+      <div style="color:var(--muted);font-size:12.5px;padding:10px 0;">暂无报错记录</div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -1589,35 +1647,50 @@ async function refreshStatus() {
       : 'MEMORY ONLY';
     document.getElementById('stat-persist-sub').textContent = data.cookiesDir || '';
 
+    const readyCount = accs.filter(a => !a.disabled && a.status === 'ready').length;
     const badge = document.getElementById('overall-badge');
-    if (accs.length > 0) {
+    if (readyCount > 0) {
       badge.className = 'pill green';
-      badge.textContent = 'READY · ' + accs.length;
+      badge.textContent = 'READY · ' + readyCount + '/' + accs.length;
+    } else if (accs.length > 0) {
+      badge.className = 'pill amber';
+      badge.textContent = 'ALL DISABLED · ' + accs.length;
     } else {
       badge.className = 'pill amber';
       badge.textContent = 'NO COOKIE';
     }
+    renderRecentErrors(data.recentErrors || []);
 
     const tbody = document.getElementById('accounts-tbody');
     if (accs.length === 0) {
       tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted);justify-content:center;">暂无账号，请先导入 Cookie</td></tr>';
     } else {
-      tbody.innerHTML = accs.map(a => \`
-        <tr>
+      tbody.innerHTML = accs.map(a => {
+        const isDisabled = !!a.disabled || a.status === 'disabled';
+        const rowStyle = isDisabled ? 'opacity:0.55;' : '';
+        const poolCell = isDisabled
+          ? '<span class="pill err" title="已手动禁用，不参与请求轮询">DISABLED</span>'
+          : poolBadgeHtml(a.pool);
+        const toggleBtn = isDisabled
+          ? '<button class="secondary" onclick="toggleAcc(\'' + a.accountId + '\', false)" style="padding:4px 10px;font-size:11.5px;margin-right:4px;border-color:var(--border-strong);">▶ 启用</button>'
+          : '<button class="secondary" onclick="toggleAcc(\'' + a.accountId + '\', true)" style="padding:4px 10px;font-size:11.5px;margin-right:4px;">⏸ 禁用</button>';
+        return \`
+        <tr style="\${rowStyle}">
           <td data-label="账号 ID"><code>\${a.accountId}</code></td>
           <td data-label="谷歌账号" title="Gaia ID: \${a.gaiaId || '未知'}">\${a.email ? \`<code>\${a.email}</code>\` : (a.sessionDead ? '<span style="color:var(--muted)">⚠ Cookie 已失效</span>' : '<span style="color:var(--muted)">未探测</span>')}</td>
           <td data-label="等级 (Tier)"><code>\${a.g1Tier || 'TIER0'}</code></td>
           <td data-label="AuthUser">\${a.authUser}</td>
           <td data-label="Cookie 数" title="\${(a.cookieNames || []).join(', ')}">\${a.cookieCount}</td>
-          <td data-label="池状态">\${poolBadgeHtml(a.pool)}</td>
+          <td data-label="池状态">\${poolCell}</td>
           <td data-label="当日调用 (15:00刷新)">\${renderUsageHtml(a)}</td>
           <td data-label="操作">
             \${renderTestBadge(a.accountId)}
+            \${toggleBtn}
             <button class="secondary" onclick="testAcc('\${a.accountId}')" style="padding:4px 10px;font-size:11.5px;margin-right:4px;">⚡ 测活</button>
             <button class="danger" onclick="removeAcc('\${a.accountId}')">移除</button>
           </td>
-        </tr>
-      \`).join('');
+        </tr>\`;
+      }).join('');
     }
   } catch (e) {}
 }
@@ -1776,6 +1849,59 @@ async function testAcc(accountId) {
   } catch (e) {
     testResults[accountId] = { loading: false, alive: false, error: e.message };
   }
+  refreshStatus();
+}
+
+function fmtErrTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const pad = n => String(n).padStart(2, '0');
+  return pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+}
+
+function renderRecentErrors(logs) {
+  const box = document.getElementById('error-logs-box');
+  const cnt = document.getElementById('errlog-count');
+  if (cnt) cnt.textContent = (logs ? logs.length : 0) + ' 条';
+  if (!box) return;
+  if (!logs || logs.length === 0) {
+    box.innerHTML = '<div style="color:var(--muted);font-size:12.5px;padding:10px 0;">暂无报错记录</div>';
+    return;
+  }
+  const esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  box.innerHTML = logs.map(item => {
+    const accLabel = item.email
+      ? esc(item.email) + (item.accountId ? ' (' + esc(item.accountId) + ')' : '')
+      : (item.accountId ? esc(item.accountId) : '未知账号');
+    const codeTag = item.status ? '<span class="pill err" style="padding:1px 6px;font-size:11px;">HTTP ' + esc(item.status) + '</span>' : '';
+    const modelTag = item.model ? '<span class="pill gray" style="padding:1px 6px;font-size:11px;">' + esc(item.model) + '</span>' : '';
+    const srcTag = item.source === 'test' ? '<span class="pill amber" style="padding:1px 6px;font-size:11px;">测活</span>' : '';
+    return '<div style="border:1px solid var(--border);background:var(--surface-sub);padding:10px 12px;">'
+      + '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px;font-size:12px;">'
+      + '<span style="color:var(--muted);font-family:ui-monospace,monospace;">' + fmtErrTime(item.ts) + '</span>'
+      + '<code style="font-weight:600;">' + accLabel + '</code>'
+      + codeTag + modelTag + srcTag
+      + '</div>'
+      + '<div style="font-family:ui-monospace,monospace;font-size:12px;color:var(--danger);word-break:break-word;white-space:pre-wrap;">' + esc(item.message) + '</div>'
+      + '</div>';
+  }).join('');
+}
+
+async function toggleAcc(accountId, disabled) {
+  const res = await fetch('/api/accounts/toggle', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ accountId, disabled })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) {
+    return alert('操作失败: ' + (data.error || '未知错误'));
+  }
+  refreshStatus();
+}
+
+async function clearErrorLogs() {
+  await fetch('/api/errors/clear', { method: 'POST' });
   refreshStatus();
 }
 
